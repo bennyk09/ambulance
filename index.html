@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Geofence Tracker</title>
+  <title>Ambulance Geofence Tracker</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -24,9 +24,12 @@
     .inside { border-left: 5px solid #ef4444; }
     .outside { border-left: 5px solid #22c55e; }
 
+    .list-section { margin-top: 20px; }
+    .list-title { margin-bottom: 8px; border-bottom: 1px solid #475569; padding-bottom: 4px; }
+
     /* Mobile Alert Screen Overlay */
-    .alert-screen { display: none; position: fixed; inset: 0; background: #dc2626; color: white; flex-direction: column; justify-content: center; align-items: center; text-align: center; z-index: 2000; }
-    .alert-screen h1 { font-size: 3.5rem; margin-bottom: 10px; }
+    .alert-screen { display: none; position: fixed; inset: 0; background: #dc2626; color: white; flex-direction: column; justify-content: center; align-items: center; text-align: center; z-index: 2000; padding: 20px; }
+    .alert-screen h1 { font-size: 3rem; margin-bottom: 15px; }
   </style>
 </head>
 <body>
@@ -35,37 +38,47 @@
   <div id="role-selector">
     <div class="card">
       <h2 style="margin-bottom: 20px;">Select Mode</h2>
-      <button class="btn btn-admin" onclick="switchRole('admin')">💻 Laptop (Admin)</button>
-      <button class="btn btn-mobile" onclick="switchRole('mobile')">📱 Mobile Device</button>
+      <button class="btn btn-admin" onclick="switchRole('admin')">🚑 Ambulance (Admin)</button>
+      <button class="btn btn-mobile" onclick="switchRole('mobile')">📱 Mobile Client</button>
     </div>
   </div>
 
   <!-- ADMIN VIEW -->
   <div id="admin-view" class="view">
     <div class="status-panel">
-      <h2>💻 Admin Dashboard</h2>
-      <p style="margin-top: 5px;"><strong>Laptop GPS:</strong> <span id="admin-coords">Locating...</span></p>
-      <p><strong>Radius:</strong> 0.76 meters (~30 inches)</p>
+      <h2>🚑 Ambulance Dashboard</h2>
+      <p style="margin-top: 5px;"><strong>Ambulance GPS:</strong> <span id="admin-coords">Locating...</span></p>
+      <p><strong>Geofence Radius:</strong> 1.0 meter</p>
     </div>
     <div id="map"></div>
-    <h3 style="margin-top: 20px;">Connected Mobile Devices</h3>
-    <div id="device-list"></div>
+    
+    <!-- Reached / Registered Devices List -->
+    <div class="list-section">
+      <h3 class="list-title" style="color: #f87171;">📍 Reached / Registered List (Inside 1m Radius)</h3>
+      <div id="registered-device-list"><em>No devices inside radius</em></div>
+    </div>
+
+    <!-- Available Devices List -->
+    <div class="list-section">
+      <h3 class="list-title" style="color: #4ade80;">📡 Available List (Outside Radius)</h3>
+      <div id="available-device-list"><em>No active devices nearby</em></div>
+    </div>
   </div>
 
   <!-- MOBILE VIEW -->
   <div id="mobile-view" class="view">
     <div class="card" style="margin: 40px auto; text-align: center;">
-      <h2>📱 Mobile Device</h2>
-      <p style="margin-top: 15px;">Unique Device ID:</p>
+      <h2>📱 Mobile Client</h2>
+      <p style="margin-top: 15px;">Your Unique Device ID:</p>
       <h1 id="device-id" style="color: #38bdf8; margin: 10px 0;">Generating...</h1>
       <p>GPS Status: <strong id="gps-status">Connecting...</strong></p>
     </div>
   </div>
 
-  <!-- RESTRICTED RADIUS ALERT -->
+  <!-- MOBILE ALERT SCREEN -->
   <div id="alert-box" class="alert-screen">
-    <h1>⚠️ PLEASE MOVE</h1>
-    <p style="font-size: 1.2rem;">You have entered the 30-inch radius around the admin laptop!</p>
+    <h1>🚨 You reached the Ambulance!</h1>
+    <p style="font-size: 1.2rem;">You are within 1 meter of the ambulance unit.</p>
   </div>
 
   <!-- LEAFLET & FIREBASE SDKs -->
@@ -73,28 +86,26 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
     import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-    import { getDatabase, ref, set, update, onValue } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+    import { getDatabase, ref, set, update, onValue, onDisconnect, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
-const firebaseConfig = {
-  apiKey: "AIzaSyA388fFTEobfUT-EMmSCCvkhdGe9taB7tA",
-  authDomain: "ambulance-75275.firebaseapp.com",
-  databaseURL: "https://ambulance-75275-default-rtdb.firebaseio.com",
-  projectId: "ambulance-75275",
-  storageBucket: "ambulance-75275.firebasestorage.app",
-  messagingSenderId: "934340345099",
-  appId: "1:934340345099:web:4ed430eecf37769611f60e",
-  measurementId: "G-JH8G50EFCL"
-};
-
+    const firebaseConfig = {
+      apiKey: "AIzaSyA388fFTEobfUT-EMmSCCvkhdGe9taB7tA",
+      authDomain: "ambulance-75275.firebaseapp.com",
+      databaseURL: "https://ambulance-75275-default-rtdb.firebaseio.com",
+      projectId: "ambulance-75275",
+      storageBucket: "ambulance-75275.firebasestorage.app",
+      messagingSenderId: "934340345099",
+      appId: "1:934340345099:web:4ed430eecf37769611f60e",
+      measurementId: "G-JH8G50EFCL"
+    };
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getDatabase(app);
 
-    const RADIUS_METERS = 0.76; // ~30 inches
+    const RADIUS_METERS = 1.0; // Set range to 1 meter
     let currentRole = null;
 
-    // Make role switcher globally available
     window.switchRole = function(role) {
       currentRole = role;
       document.getElementById('role-selector').style.display = 'none';
@@ -104,13 +115,12 @@ const firebaseConfig = {
       });
     };
 
-    // Auto-detect role if URL contains parameter (e.g. index.html?role=admin)
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('role')) {
       window.switchRole(urlParams.get('role'));
     }
 
-    // --- HAVERSINE FORMULA ---
+    // --- HAVERSINE DISTANCE FORMULA ---
     function getDistanceInMeters(lat1, lon1, lat2, lon2) {
       const R = 6371000;
       const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -121,7 +131,7 @@ const firebaseConfig = {
       return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
     }
 
-    // --- ADMIN LOGIC ---
+    // --- ADMIN DASHBOARD ---
     function initAdmin() {
       document.getElementById('admin-view').style.display = 'block';
       const map = L.map('map').setView([0, 0], 19);
@@ -136,7 +146,7 @@ const firebaseConfig = {
 
         if (!adminMarker) {
           map.setView([latitude, longitude], 19);
-          adminMarker = L.marker([latitude, longitude]).addTo(map).bindPopup("Admin Laptop");
+          adminMarker = L.marker([latitude, longitude]).addTo(map).bindPopup("Ambulance Unit");
           radiusCircle = L.circle([latitude, longitude], { color: 'red', fillColor: '#f03', fillOpacity: 0.2, radius: RADIUS_METERS }).addTo(map);
         } else {
           adminMarker.setLatLng([latitude, longitude]);
@@ -146,9 +156,20 @@ const firebaseConfig = {
 
       onValue(ref(db, 'devices'), (snapshot) => {
         const data = snapshot.val();
-        const listEl = document.getElementById('device-list');
-        listEl.innerHTML = '';
-        if (!data || !adminPos) return;
+        const registeredListEl = document.getElementById('registered-device-list');
+        const availableListEl = document.getElementById('available-device-list');
+
+        registeredListEl.innerHTML = '';
+        availableListEl.innerHTML = '';
+
+        if (!data || !adminPos) {
+          registeredListEl.innerHTML = '<em>No registered devices inside radius</em>';
+          availableListEl.innerHTML = '<em>No active devices</em>';
+          return;
+        }
+
+        let registeredCount = 0;
+        let availableCount = 0;
 
         Object.keys(data).forEach((id) => {
           const device = data[id];
@@ -164,14 +185,24 @@ const firebaseConfig = {
           card.innerHTML = `
             <strong>Device ID:</strong> ${id}<br>
             <strong>Distance:</strong> ${distance.toFixed(2)} meters<br>
-            <strong>Status:</strong> ${isInside ? '⚠️ INSIDE RADIUS' : '✅ Safe'}
+            <strong>Status:</strong> ${isInside ? '⚠️ REACHED AMBULANCE' : '✅ En Route'}
           `;
-          listEl.appendChild(card);
+
+          if (isInside) {
+            registeredListEl.appendChild(card);
+            registeredCount++;
+          } else {
+            availableListEl.appendChild(card);
+            availableCount++;
+          }
         });
+
+        if (registeredCount === 0) registeredListEl.innerHTML = '<em>No devices inside radius</em>';
+        if (availableCount === 0) availableListEl.innerHTML = '<em>No active devices outside radius</em>';
       });
     }
 
-    // --- MOBILE LOGIC ---
+    // --- MOBILE CLIENT ---
     function initMobile() {
       document.getElementById('mobile-view').style.display = 'block';
 
@@ -179,9 +210,14 @@ const firebaseConfig = {
       localStorage.setItem('mobile_device_id', deviceId);
       document.getElementById('device-id').innerText = deviceId;
 
+      const deviceRef = ref(db, `devices/${deviceId}`);
+
+      // Auto-remove device from database when disconnected or closed
+      onDisconnect(deviceRef).remove();
+
       navigator.geolocation.watchPosition((pos) => {
         document.getElementById('gps-status').innerText = 'Active (Live)';
-        set(ref(db, `devices/${deviceId}`), {
+        set(deviceRef, {
           lat: pos.coords.latitude,
           lng: pos.coords.longitude,
           lastUpdated: Date.now()
@@ -190,8 +226,10 @@ const firebaseConfig = {
         document.getElementById('gps-status').innerText = 'GPS Error: ' + err.message;
       }, { enableHighAccuracy: true, maximumAge: 0 });
 
+      // Listen for proximity state changes
       onValue(ref(db, `devices/${deviceId}/insideRadius`), (snapshot) => {
-        document.getElementById('alert-box').style.display = snapshot.val() ? 'flex' : 'none';
+        const isReached = snapshot.val();
+        document.getElementById('alert-box').style.display = isReached ? 'flex' : 'none';
       });
     }
   </script>
