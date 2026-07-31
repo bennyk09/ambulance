@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Geofence Tracker</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #fff; text-align: center; }
+
+    /* Role Selector Modal */
+    #role-selector { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+    .card { background: #1e293b; padding: 30px; border-radius: 16px; max-width: 400px; width: 100%; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+    .btn { display: block; width: 100%; padding: 14px; margin: 10px 0; font-size: 1rem; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; transition: background 0.2s; }
+    .btn-admin { background: #2563eb; color: #fff; }
+    .btn-mobile { background: #0284c7; color: #fff; }
+
+    /* Views */
+    .view { display: none; padding: 20px; text-align: left; }
+    #map { height: 400px; border-radius: 12px; margin-top: 15px; }
+    .status-panel { background: #1e293b; padding: 15px; border-radius: 8px; margin-bottom: 10px; }
+    .device-card { background: #334155; padding: 12px; border-radius: 8px; margin-top: 10px; }
+    .inside { border-left: 5px solid #ef4444; }
+    .outside { border-left: 5px solid #22c55e; }
+
+    /* Mobile Alert Screen Overlay */
+    .alert-screen { display: none; position: fixed; inset: 0; background: #dc2626; color: white; flex-direction: column; justify-content: center; align-items: center; text-align: center; z-index: 2000; }
+    .alert-screen h1 { font-size: 3.5rem; margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+
+  <!-- ROLE SELECTOR VIEW -->
+  <div id="role-selector">
+    <div class="card">
+      <h2 style="margin-bottom: 20px;">Select Mode</h2>
+      <button class="btn btn-admin" onclick="switchRole('admin')">💻 Laptop (Admin)</button>
+      <button class="btn btn-mobile" onclick="switchRole('mobile')">📱 Mobile Device</button>
+    </div>
+  </div>
+
+  <!-- ADMIN VIEW -->
+  <div id="admin-view" class="view">
+    <div class="status-panel">
+      <h2>💻 Admin Dashboard</h2>
+      <p style="margin-top: 5px;"><strong>Laptop GPS:</strong> <span id="admin-coords">Locating...</span></p>
+      <p><strong>Radius:</strong> 0.76 meters (~30 inches)</p>
+    </div>
+    <div id="map"></div>
+    <h3 style="margin-top: 20px;">Connected Mobile Devices</h3>
+    <div id="device-list"></div>
+  </div>
+
+  <!-- MOBILE VIEW -->
+  <div id="mobile-view" class="view">
+    <div class="card" style="margin: 40px auto; text-align: center;">
+      <h2>📱 Mobile Device</h2>
+      <p style="margin-top: 15px;">Unique Device ID:</p>
+      <h1 id="device-id" style="color: #38bdf8; margin: 10px 0;">Generating...</h1>
+      <p>GPS Status: <strong id="gps-status">Connecting...</strong></p>
+    </div>
+  </div>
+
+  <!-- RESTRICTED RADIUS ALERT -->
+  <div id="alert-box" class="alert-screen">
+    <h1>⚠️ PLEASE MOVE</h1>
+    <p style="font-size: 1.2rem;">You have entered the 30-inch radius around the admin laptop!</p>
+  </div>
+
+  <!-- LEAFLET & FIREBASE SDKs -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+    import { getDatabase, ref, set, update, onValue } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+    const firebaseConfig = {
+      // ⚠️ REPLACE WITH YOUR FIREBASE CONFIG
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT.firebaseapp.com",
+      databaseURL: "https://YOUR_PROJECT-default-rtdb.firebaseio.com",
+      projectId: "YOUR_PROJECT",
+      storageBucket: "YOUR_PROJECT.appspot.com",
+      messagingSenderId: "SENDER_ID",
+      appId: "APP_ID"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getDatabase(app);
+
+    const RADIUS_METERS = 0.76; // ~30 inches
+    let currentRole = null;
+
+    // Make role switcher globally available
+    window.switchRole = function(role) {
+      currentRole = role;
+      document.getElementById('role-selector').style.display = 'none';
+      signInAnonymously(auth).then(() => {
+        if (role === 'admin') initAdmin();
+        if (role === 'mobile') initMobile();
+      });
+    };
+
+    // Auto-detect role if URL contains parameter (e.g. index.html?role=admin)
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('role')) {
+      window.switchRole(urlParams.get('role'));
+    }
+
+    // --- HAVERSINE FORMULA ---
+    function getDistanceInMeters(lat1, lon1, lat2, lon2) {
+      const R = 6371000;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon/2) * Math.sin(dLon/2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+
+    // --- ADMIN LOGIC ---
+    function initAdmin() {
+      document.getElementById('admin-view').style.display = 'block';
+      const map = L.map('map').setView([0, 0], 19);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+      let adminMarker, radiusCircle, adminPos = null;
+
+      navigator.geolocation.watchPosition((pos) => {
+        const { latitude, longitude } = pos.coords;
+        adminPos = { lat: latitude, lng: longitude };
+        document.getElementById('admin-coords').innerText = `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+
+        if (!adminMarker) {
+          map.setView([latitude, longitude], 19);
+          adminMarker = L.marker([latitude, longitude]).addTo(map).bindPopup("Admin Laptop");
+          radiusCircle = L.circle([latitude, longitude], { color: 'red', fillColor: '#f03', fillOpacity: 0.2, radius: RADIUS_METERS }).addTo(map);
+        } else {
+          adminMarker.setLatLng([latitude, longitude]);
+          radiusCircle.setLatLng([latitude, longitude]);
+        }
+      }, (err) => alert("GPS Error: " + err.message), { enableHighAccuracy: true });
+
+      onValue(ref(db, 'devices'), (snapshot) => {
+        const data = snapshot.val();
+        const listEl = document.getElementById('device-list');
+        listEl.innerHTML = '';
+        if (!data || !adminPos) return;
+
+        Object.keys(data).forEach((id) => {
+          const device = data[id];
+          if (!device.lat || !device.lng) return;
+
+          const distance = getDistanceInMeters(adminPos.lat, adminPos.lng, device.lat, device.lng);
+          const isInside = distance <= RADIUS_METERS;
+
+          update(ref(db, `devices/${id}`), { insideRadius: isInside });
+
+          const card = document.createElement('div');
+          card.className = `device-card ${isInside ? 'inside' : 'outside'}`;
+          card.innerHTML = `
+            <strong>Device ID:</strong> ${id}<br>
+            <strong>Distance:</strong> ${distance.toFixed(2)} meters<br>
+            <strong>Status:</strong> ${isInside ? '⚠️ INSIDE RADIUS' : '✅ Safe'}
+          `;
+          listEl.appendChild(card);
+        });
+      });
+    }
+
+    // --- MOBILE LOGIC ---
+    function initMobile() {
+      document.getElementById('mobile-view').style.display = 'block';
+
+      let deviceId = localStorage.getItem('mobile_device_id') || 'MOB-' + Math.random().toString(36).substr(2, 6).toUpperCase();
+      localStorage.setItem('mobile_device_id', deviceId);
+      document.getElementById('device-id').innerText = deviceId;
+
+      navigator.geolocation.watchPosition((pos) => {
+        document.getElementById('gps-status').innerText = 'Active (Live)';
+        set(ref(db, `devices/${deviceId}`), {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          lastUpdated: Date.now()
+        });
+      }, (err) => {
+        document.getElementById('gps-status').innerText = 'GPS Error: ' + err.message;
+      }, { enableHighAccuracy: true, maximumAge: 0 });
+
+      onValue(ref(db, `devices/${deviceId}/insideRadius`), (snapshot) => {
+        document.getElementById('alert-box').style.display = snapshot.val() ? 'flex' : 'none';
+      });
+    }
+  </script>
+</body>
+</html>
