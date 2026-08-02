@@ -16,6 +16,7 @@
     .btn { display: block; width: 100%; padding: 14px; margin: 8px 0; font-size: 1rem; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; transition: background 0.2s; }
     .btn-admin { background: #2563eb; color: #fff; }
     .btn-mobile { background: #0284c7; color: #fff; }
+    .btn-calibrate { background: #eab308; color: #000; padding: 6px 12px; border-radius: 6px; font-weight: bold; border: none; cursor: pointer; margin-left: 10px; }
 
     /* Views */
     .view { display: none; padding: 20px; text-align: left; }
@@ -52,15 +53,17 @@
     <div class="status-panel">
       <h2>🚑 Ambulance Dashboard</h2>
       <p style="margin-top: 5px;"><strong>Logged in as:</strong> <span id="admin-user-display" style="color: #38bdf8;"></span></p>
-      <p><strong>Ambulance GPS:</strong> <span id="admin-coords">Locating...</span></p>
       <p>
+        <strong>Ambulance GPS:</strong> <span id="admin-coords">Locating...</span>
+        <button class="btn-calibrate" id="calibrate-btn" onclick="calibrateToFirstDevice()">🎯 Calibrate to Phone GPS</button>
+      </p>
+      <p style="margin-top: 8px;">
         <strong>Geofence Radius:</strong> 
         <select id="radius-selector" class="radius-select">
-          <option value="1">1.0 Meter</option>
-          <option value="10">10 Meters</option>
-          <option value="50">50 Meters</option>
-          <option value="150" selected>150 Meters (Easy Testing)</option>
-          <option value="500">500 Meters</option>
+          <option value="0.762" selected>📏 30 Inches (~0.76m)</option>
+          <option value="1.524">📏 60 Inches (~1.52m)</option>
+          <option value="5.0">📏 5 Meters</option>
+          <option value="150.0">📏 150 Meters (Easy Testing)</option>
         </select>
       </p>
     </div>
@@ -95,7 +98,7 @@
   <!-- MOBILE ALERT SCREEN -->
   <div id="alert-box" class="alert-screen">
     <h1>🚨 You reached the Ambulance!</h1>
-    <p style="font-size: 1.2rem;">You are within the designated geofence radius of the ambulance unit.</p>
+    <p style="font-size: 1.2rem;">You are within the 30-inch geofence radius of the ambulance unit.</p>
   </div>
 
   <!-- LEAFLET & FIREBASE SDKs -->
@@ -125,7 +128,10 @@
     const auth = getAuth(app);
     const db = getDatabase(app);
 
-    let activeRadiusMeters = 150.0;
+    let activeRadiusMeters = 0.762; // Default ~30 inches
+    let adminPos = null;
+    let manualCalibration = false;
+    let latestMobilePos = null;
 
     window.handleLogin = function(role) {
       const nameInput = document.getElementById('username').value.trim();
@@ -147,6 +153,18 @@
         });
     };
 
+    // Make Calibration Function Globally Accessible for the Admin UI
+    window.calibrateToFirstDevice = function() {
+      if (!latestMobilePos) {
+        alert("No mobile device detected yet! Connect your phone first.");
+        return;
+      }
+      adminPos = { lat: latestMobilePos.lat, lng: latestMobilePos.lng };
+      manualCalibration = true;
+      document.getElementById('admin-coords').innerText = `${adminPos.lat.toFixed(6)}, ${adminPos.lng.toFixed(6)} (Calibrated)`;
+      alert("🎯 Calibrated! Ambulance zero-point moved to match phone GPS.");
+    };
+
     function getDistanceInMeters(lat1, lon1, lat2, lon2) {
       const R = 6371000;
       const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -157,17 +175,21 @@
       return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
     }
 
+    function metersToInches(meters) {
+      return (meters * 39.3701).toFixed(1);
+    }
+
     // --- ADMIN DASHBOARD LOGIC ---
     function initAdmin(adminName) {
       document.getElementById('admin-view').style.display = 'block';
       document.getElementById('admin-user-display').innerText = adminName;
 
-      const map = L.map('map').setView([0, 0], 17);
+      const map = L.map('map').setView([0, 0], 19);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
 
       setTimeout(() => map.invalidateSize(), 500);
 
-      let adminMarker, radiusCircle, adminPos = null;
+      let adminMarker, radiusCircle;
 
       const radiusSelectEl = document.getElementById('radius-selector');
       activeRadiusMeters = parseFloat(radiusSelectEl.value);
@@ -180,17 +202,21 @@
       });
 
       navigator.geolocation.watchPosition((pos) => {
-        const { latitude, longitude } = pos.coords;
-        adminPos = { lat: latitude, lng: longitude };
-        document.getElementById('admin-coords').innerText = `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+        if (!manualCalibration) {
+          const { latitude, longitude } = pos.coords;
+          adminPos = { lat: latitude, lng: longitude };
+          document.getElementById('admin-coords').innerText = `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+        }
 
-        if (!adminMarker) {
-          map.setView([latitude, longitude], 17);
-          adminMarker = L.marker([latitude, longitude]).addTo(map).bindPopup("Ambulance Unit");
-          radiusCircle = L.circle([latitude, longitude], { color: 'red', fillColor: '#f03', fillOpacity: 0.2, radius: activeRadiusMeters }).addTo(map);
-        } else {
-          adminMarker.setLatLng([latitude, longitude]);
-          radiusCircle.setLatLng([latitude, longitude]);
+        if (adminPos) {
+          if (!adminMarker) {
+            map.setView([adminPos.lat, adminPos.lng], 19);
+            adminMarker = L.marker([adminPos.lat, adminPos.lng]).addTo(map).bindPopup("Ambulance Unit");
+            radiusCircle = L.circle([adminPos.lat, adminPos.lng], { color: 'red', fillColor: '#f03', fillOpacity: 0.2, radius: activeRadiusMeters }).addTo(map);
+          } else {
+            adminMarker.setLatLng([adminPos.lat, adminPos.lng]);
+            radiusCircle.setLatLng([adminPos.lat, adminPos.lng]);
+          }
         }
       }, (err) => alert("Admin GPS Error: " + err.message), { 
         enableHighAccuracy: true,
@@ -220,21 +246,24 @@
           const device = data[id];
           if (!device || device.lat === undefined || device.lng === undefined) return;
 
-          const distance = getDistanceInMeters(adminPos.lat, adminPos.lng, device.lat, device.lng);
-          const isInside = distance <= activeRadiusMeters;
+          // Store current device pos for indoor calibration reference
+          latestMobilePos = { lat: device.lat, lng: device.lng };
 
-          // Always ensure Firebase reflects current proximity state
+          const distanceMeters = getDistanceInMeters(adminPos.lat, adminPos.lng, device.lat, device.lng);
+          const isInside = distanceMeters <= activeRadiusMeters;
+
           if (device.insideRadius !== isInside) {
             update(ref(db, `devices/${id}`), { insideRadius: isInside });
           }
 
           const userName = device.name || 'Unknown User';
+          const distanceInches = metersToInches(distanceMeters);
           const card = document.createElement('div');
           card.className = `device-card ${isInside ? 'inside' : 'outside'}`;
           card.innerHTML = `
             <strong>User Name:</strong> ${userName}<br>
             <strong>Unique ID:</strong> ${id}<br>
-            <strong>Distance:</strong> ${distance.toFixed(2)} meters<br>
+            <strong>Distance:</strong> ${distanceMeters.toFixed(2)} meters (${distanceInches} inches)<br>
             <strong>Status:</strong> ${isInside ? '⚠️ REACHED AMBULANCE' : '✅ En Route'}
           `;
 
@@ -312,7 +341,7 @@
         }
       );
 
-      // FIX: Explicitly set display to 'none' whenever insideRadius is false or null
+      // Explicitly reset alert view when leaving geofence radius
       onValue(ref(db, `devices/${uniqueId}/insideRadius`), (snapshot) => {
         const isReached = snapshot.val();
         const alertBox = document.getElementById('alert-box');
