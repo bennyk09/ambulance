@@ -9,7 +9,7 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #fff; text-align: center; }
 
-    /* Login & Role Screen */
+    /* Login Screen */
     .centered-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
     .card { background: #1e293b; padding: 30px; border-radius: 16px; max-width: 400px; width: 100%; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
     .input-field { width: 100%; padding: 12px; margin: 8px 0 16px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #fff; font-size: 1rem; }
@@ -28,14 +28,14 @@
     .list-section { margin-top: 20px; }
     .list-title { margin-bottom: 8px; border-bottom: 1px solid #475569; padding-bottom: 4px; }
 
-    /* Alert Screen */
+    /* Mobile Alert Screen Overlay */
     .alert-screen { display: none; position: fixed; inset: 0; background: #dc2626; color: white; flex-direction: column; justify-content: center; align-items: center; text-align: center; z-index: 2000; padding: 20px; }
     .alert-screen h1 { font-size: 2.8rem; margin-bottom: 15px; }
   </style>
 </head>
 <body>
 
-  <!-- LOGIN SCREEN -->
+  <!-- LOGIN & ROLE SELECTOR SCREEN -->
   <div id="login-screen" class="centered-screen">
     <div class="card">
       <h2 style="margin-bottom: 15px;">Login Tracker</h2>
@@ -123,9 +123,12 @@
       signInAnonymously(auth).then(() => {
         if (role === 'admin') initAdmin(nameInput);
         if (role === 'mobile') initMobile(nameInput);
+      }).catch((err) => {
+        alert("Firebase Auth Error: " + err.message);
       });
     };
 
+    // --- HAVERSINE DISTANCE FORMULA ---
     function getDistanceInMeters(lat1, lon1, lat2, lon2) {
       const R = 6371000;
       const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -136,7 +139,7 @@
       return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
     }
 
-    // --- ADMIN DASHBOARD ---
+    // --- ADMIN DASHBOARD LOGIC ---
     function initAdmin(adminName) {
       document.getElementById('admin-view').style.display = 'block';
       document.getElementById('admin-user-display').innerText = adminName;
@@ -159,9 +162,13 @@
           adminMarker.setLatLng([latitude, longitude]);
           radiusCircle.setLatLng([latitude, longitude]);
         }
-      }, (err) => alert("GPS Error: " + err.message), { enableHighAccuracy: true });
+      }, (err) => alert("Admin GPS Error: " + err.message), { 
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0 
+      });
 
-      // LISTEN TO CONNECTED MOBILE DEVICES
+      // LISTEN TO ALL CONNECTED MOBILE DEVICES
       onValue(ref(db, 'devices'), (snapshot) => {
         const data = snapshot.val();
         const registeredListEl = document.getElementById('registered-device-list');
@@ -186,7 +193,7 @@
           const distance = getDistanceInMeters(adminPos.lat, adminPos.lng, device.lat, device.lng);
           const isInside = distance <= RADIUS_METERS;
 
-          // Prevent state mutation loops
+          // Prevent state mutation loop
           if (device.insideRadius !== isInside) {
             update(ref(db, `devices/${id}`), { insideRadius: isInside });
           }
@@ -215,41 +222,65 @@
       });
     }
 
-    // --- MOBILE CLIENT ---
+    // --- MOBILE CLIENT LOGIC ---
     function initMobile(userName) {
       document.getElementById('mobile-view').style.display = 'block';
 
-      // Generate or retrieve stored unique ID
+      // Generate or retrieve persistent Unique ID
       let uniqueId = localStorage.getItem('mobile_unique_id');
       if (!uniqueId) {
         uniqueId = 'MOB-' + Math.random().toString(36).substring(2, 8).toUpperCase();
         localStorage.setItem('mobile_unique_id', uniqueId);
       }
 
-      // Display Name & Unique ID on screen
       document.getElementById('mobile-user-display').innerText = userName;
       document.getElementById('mobile-id-display').innerText = uniqueId;
 
       const deviceRef = ref(db, `devices/${uniqueId}`);
 
-      // Auto disconnect cleanup
+      // Auto-remove node on disconnect to clear duplicates
       onDisconnect(deviceRef).remove();
 
-      // GPS Tracking
-      navigator.geolocation.watchPosition((pos) => {
-        document.getElementById('gps-status').innerText = 'Active (Live)';
-        
-        update(deviceRef, {
-          name: userName,
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          lastUpdated: Date.now()
-        });
-      }, (err) => {
-        document.getElementById('gps-status').innerText = 'GPS Error: ' + err.message;
-      }, { enableHighAccuracy: true, maximumAge: 0 });
+      // GPS Watch Position with Explicit Error Handling
+      navigator.geolocation.watchPosition(
+        (pos) => {
+          const statusEl = document.getElementById('gps-status');
+          statusEl.innerText = 'Active (Live)';
+          statusEl.style.color = '#34d399'; // Green
 
-      // Listen for proximity state
+          update(deviceRef, {
+            name: userName,
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            lastUpdated: Date.now()
+          });
+        },
+        (err) => {
+          const statusEl = document.getElementById('gps-status');
+          statusEl.style.color = '#f87171'; // Red
+
+          switch (err.code) {
+            case err.PERMISSION_DENIED:
+              statusEl.innerText = 'Permission Denied! Allow Location in Browser Settings.';
+              break;
+            case err.POSITION_UNAVAILABLE:
+              statusEl.innerText = 'Position Unavailable! Turn on Device GPS.';
+              break;
+            case err.TIMEOUT:
+              statusEl.innerText = 'GPS Timeout! Step near a window or outdoors.';
+              break;
+            default:
+              statusEl.innerText = 'GPS Error: ' + err.message;
+          }
+        },
+        { 
+          enableHighAccuracy: true, 
+          timeout: 10000, 
+          maximumAge: 0 
+        }
+      );
+
+      // Listen for Geofence Proximity Alert
       onValue(ref(db, `devices/${uniqueId}/insideRadius`), (snapshot) => {
         const isReached = snapshot.val();
         document.getElementById('alert-box').style.display = isReached === true ? 'flex' : 'none';
