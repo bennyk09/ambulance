@@ -28,7 +28,6 @@
     .list-section { margin-top: 20px; }
     .list-title { margin-bottom: 8px; border-bottom: 1px solid #475569; padding-bottom: 4px; }
 
-    /* Controls */
     .radius-select { padding: 6px 10px; border-radius: 6px; background: #0f172a; color: #38bdf8; border: 1px solid #334155; font-weight: bold; margin-left: 8px; }
 
     /* Mobile Alert Screen Overlay */
@@ -126,7 +125,7 @@
     const auth = getAuth(app);
     const db = getDatabase(app);
 
-    let activeRadiusMeters = 150.0; // Default for easy testing (switchable in UI)
+    let activeRadiusMeters = 150.0;
 
     window.handleLogin = function(role) {
       const nameInput = document.getElementById('username').value.trim();
@@ -166,7 +165,6 @@
       const map = L.map('map').setView([0, 0], 17);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
 
-      // Refresh map view to fix grey/missing tiles
       setTimeout(() => map.invalidateSize(), 500);
 
       let adminMarker, radiusCircle, adminPos = null;
@@ -225,6 +223,7 @@
           const distance = getDistanceInMeters(adminPos.lat, adminPos.lng, device.lat, device.lng);
           const isInside = distance <= activeRadiusMeters;
 
+          // Always ensure Firebase reflects current proximity state
           if (device.insideRadius !== isInside) {
             update(ref(db, `devices/${id}`), { insideRadius: isInside });
           }
@@ -313,9 +312,16 @@
         }
       );
 
+      // FIX: Explicitly set display to 'none' whenever insideRadius is false or null
       onValue(ref(db, `devices/${uniqueId}/insideRadius`), (snapshot) => {
         const isReached = snapshot.val();
-        document.getElementById('alert-box').style.display = isReached === true ? 'flex' : 'none';
+        const alertBox = document.getElementById('alert-box');
+
+        if (isReached === true) {
+          alertBox.style.display = 'flex';
+        } else {
+          alertBox.style.display = 'none';
+        }
       });
     }
   </script>
