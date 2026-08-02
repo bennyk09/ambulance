@@ -19,7 +19,7 @@
 
     /* Views */
     .view { display: none; padding: 20px; text-align: left; }
-    #map { height: 350px; border-radius: 12px; margin-top: 15px; }
+    #map { height: 350px; border-radius: 12px; margin-top: 15px; width: 100%; }
     .status-panel { background: #1e293b; padding: 15px; border-radius: 8px; margin-bottom: 10px; }
     .device-card { background: #334155; padding: 12px; border-radius: 8px; margin-top: 10px; }
     .inside { border-left: 5px solid #ef4444; }
@@ -27,6 +27,9 @@
 
     .list-section { margin-top: 20px; }
     .list-title { margin-bottom: 8px; border-bottom: 1px solid #475569; padding-bottom: 4px; }
+
+    /* Controls */
+    .radius-select { padding: 6px 10px; border-radius: 6px; background: #0f172a; color: #38bdf8; border: 1px solid #334155; font-weight: bold; margin-left: 8px; }
 
     /* Mobile Alert Screen Overlay */
     .alert-screen { display: none; position: fixed; inset: 0; background: #dc2626; color: white; flex-direction: column; justify-content: center; align-items: center; text-align: center; z-index: 2000; padding: 20px; }
@@ -51,12 +54,21 @@
       <h2>🚑 Ambulance Dashboard</h2>
       <p style="margin-top: 5px;"><strong>Logged in as:</strong> <span id="admin-user-display" style="color: #38bdf8;"></span></p>
       <p><strong>Ambulance GPS:</strong> <span id="admin-coords">Locating...</span></p>
-      <p><strong>Geofence Radius:</strong> 1.0 meter</p>
+      <p>
+        <strong>Geofence Radius:</strong> 
+        <select id="radius-selector" class="radius-select">
+          <option value="1">1.0 Meter</option>
+          <option value="10">10 Meters</option>
+          <option value="50">50 Meters</option>
+          <option value="150" selected>150 Meters (Easy Testing)</option>
+          <option value="500">500 Meters</option>
+        </select>
+      </p>
     </div>
     <div id="map"></div>
     
     <div class="list-section">
-      <h3 class="list-title" style="color: #f87171;">📍 Reached / Registered List (Inside 1m Radius)</h3>
+      <h3 class="list-title" style="color: #f87171;">📍 Reached / Registered List (Inside Radius)</h3>
       <div id="registered-device-list"><em>No devices inside radius</em></div>
     </div>
 
@@ -84,7 +96,7 @@
   <!-- MOBILE ALERT SCREEN -->
   <div id="alert-box" class="alert-screen">
     <h1>🚨 You reached the Ambulance!</h1>
-    <p style="font-size: 1.2rem;">You are within 1 meter of the ambulance unit.</p>
+    <p style="font-size: 1.2rem;">You are within the designated geofence radius of the ambulance unit.</p>
   </div>
 
   <!-- LEAFLET & FIREBASE SDKs -->
@@ -114,7 +126,7 @@
     const auth = getAuth(app);
     const db = getDatabase(app);
 
-    const RADIUS_METERS = 1.0; 
+    let activeRadiusMeters = 150.0; // Default for easy testing (switchable in UI)
 
     window.handleLogin = function(role) {
       const nameInput = document.getElementById('username').value.trim();
@@ -125,11 +137,8 @@
 
       document.getElementById('login-screen').style.display = 'none';
 
-      // Fix: Use inMemoryPersistence to bypass strict third-party localStorage restrictions
       setPersistence(auth, inMemoryPersistence)
-        .then(() => {
-          return signInAnonymously(auth);
-        })
+        .then(() => signInAnonymously(auth))
         .then(() => {
           if (role === 'admin') initAdmin(nameInput);
           if (role === 'mobile') initMobile(nameInput);
@@ -139,7 +148,6 @@
         });
     };
 
-    // --- HAVERSINE DISTANCE FORMULA ---
     function getDistanceInMeters(lat1, lon1, lat2, lon2) {
       const R = 6371000;
       const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -155,10 +163,23 @@
       document.getElementById('admin-view').style.display = 'block';
       document.getElementById('admin-user-display').innerText = adminName;
 
-      const map = L.map('map').setView([0, 0], 19);
+      const map = L.map('map').setView([0, 0], 17);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
 
+      // Refresh map view to fix grey/missing tiles
+      setTimeout(() => map.invalidateSize(), 500);
+
       let adminMarker, radiusCircle, adminPos = null;
+
+      const radiusSelectEl = document.getElementById('radius-selector');
+      activeRadiusMeters = parseFloat(radiusSelectEl.value);
+
+      radiusSelectEl.addEventListener('change', (e) => {
+        activeRadiusMeters = parseFloat(e.target.value);
+        if (radiusCircle) {
+          radiusCircle.setRadius(activeRadiusMeters);
+        }
+      });
 
       navigator.geolocation.watchPosition((pos) => {
         const { latitude, longitude } = pos.coords;
@@ -166,9 +187,9 @@
         document.getElementById('admin-coords').innerText = `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
 
         if (!adminMarker) {
-          map.setView([latitude, longitude], 19);
+          map.setView([latitude, longitude], 17);
           adminMarker = L.marker([latitude, longitude]).addTo(map).bindPopup("Ambulance Unit");
-          radiusCircle = L.circle([latitude, longitude], { color: 'red', fillColor: '#f03', fillOpacity: 0.2, radius: RADIUS_METERS }).addTo(map);
+          radiusCircle = L.circle([latitude, longitude], { color: 'red', fillColor: '#f03', fillOpacity: 0.2, radius: activeRadiusMeters }).addTo(map);
         } else {
           adminMarker.setLatLng([latitude, longitude]);
           radiusCircle.setLatLng([latitude, longitude]);
@@ -202,9 +223,8 @@
           if (!device || device.lat === undefined || device.lng === undefined) return;
 
           const distance = getDistanceInMeters(adminPos.lat, adminPos.lng, device.lat, device.lng);
-          const isInside = distance <= RADIUS_METERS;
+          const isInside = distance <= activeRadiusMeters;
 
-          // Prevent state mutation loops
           if (device.insideRadius !== isInside) {
             update(ref(db, `devices/${id}`), { insideRadius: isInside });
           }
@@ -237,13 +257,10 @@
     function initMobile(userName) {
       document.getElementById('mobile-view').style.display = 'block';
 
-      // Safely fetch or create unique device ID
       let uniqueId = null;
       try {
         uniqueId = localStorage.getItem('mobile_unique_id');
-      } catch (e) {
-        console.warn("Storage restricted, generating session ID");
-      }
+      } catch (e) {}
 
       if (!uniqueId) {
         uniqueId = 'MOB-' + Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -256,16 +273,13 @@
       document.getElementById('mobile-id-display').innerText = uniqueId;
 
       const deviceRef = ref(db, `devices/${uniqueId}`);
-
-      // Auto-remove node on disconnect to clear stale duplicates
       onDisconnect(deviceRef).remove();
 
-      // GPS Watch Position
       navigator.geolocation.watchPosition(
         (pos) => {
           const statusEl = document.getElementById('gps-status');
           statusEl.innerText = 'Active (Live)';
-          statusEl.style.color = '#34d399'; // Green
+          statusEl.style.color = '#34d399';
 
           update(deviceRef, {
             name: userName,
@@ -276,17 +290,17 @@
         },
         (err) => {
           const statusEl = document.getElementById('gps-status');
-          statusEl.style.color = '#f87171'; // Red
+          statusEl.style.color = '#f87171';
 
           switch (err.code) {
             case err.PERMISSION_DENIED:
-              statusEl.innerText = 'Permission Denied! Enable location permissions in browser settings.';
+              statusEl.innerText = 'Permission Denied! Enable location access in settings.';
               break;
             case err.POSITION_UNAVAILABLE:
-              statusEl.innerText = 'Position Unavailable! Ensure device GPS is turned on.';
+              statusEl.innerText = 'Position Unavailable! Ensure GPS is on.';
               break;
             case err.TIMEOUT:
-              statusEl.innerText = 'GPS Timeout! Step near a window or move outdoors.';
+              statusEl.innerText = 'GPS Timeout! Step near a window.';
               break;
             default:
               statusEl.innerText = 'GPS Error: ' + err.message;
@@ -299,7 +313,6 @@
         }
       );
 
-      // Listen for Geofence Proximity Alert
       onValue(ref(db, `devices/${uniqueId}/insideRadius`), (snapshot) => {
         const isReached = snapshot.val();
         document.getElementById('alert-box').style.display = isReached === true ? 'flex' : 'none';
