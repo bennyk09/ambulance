@@ -16,7 +16,9 @@
     .btn { display: block; width: 100%; padding: 14px; margin: 8px 0; font-size: 1rem; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; transition: background 0.2s; }
     .btn-admin { background: #2563eb; color: #fff; }
     .btn-mobile { background: #0284c7; color: #fff; }
-    .btn-calibrate { background: #eab308; color: #000; padding: 6px 12px; border-radius: 6px; font-weight: bold; border: none; cursor: pointer; margin-left: 10px; }
+    .btn-action { padding: 6px 12px; border-radius: 6px; font-weight: bold; border: none; cursor: pointer; margin-left: 6px; font-size: 0.85rem; }
+    .btn-calibrate { background: #eab308; color: #000; }
+    .btn-clear { background: #ef4444; color: #fff; }
 
     /* Views */
     .view { display: none; padding: 20px; text-align: left; }
@@ -53,9 +55,10 @@
     <div class="status-panel">
       <h2>🚑 Ambulance Dashboard</h2>
       <p style="margin-top: 5px;"><strong>Logged in as:</strong> <span id="admin-user-display" style="color: #38bdf8;"></span></p>
-      <p>
+      <p style="margin-top: 5px;">
         <strong>Ambulance GPS:</strong> <span id="admin-coords">Locating...</span>
-        <button class="btn-calibrate" id="calibrate-btn" onclick="calibrateToFirstDevice()">🎯 Calibrate to Phone GPS</button>
+        <button class="btn-action btn-calibrate" id="calibrate-btn" onclick="calibrateToFirstDevice()">🎯 Calibrate</button>
+        <button class="btn-action btn-clear" onclick="clearInactiveDevices()">🧹 Clear Old Test Devices</button>
       </p>
       <p style="margin-top: 8px;">
         <strong>Geofence Radius:</strong> 
@@ -98,7 +101,7 @@
   <!-- MOBILE ALERT SCREEN -->
   <div id="alert-box" class="alert-screen">
     <h1>🚨 You reached the Ambulance!</h1>
-    <p style="font-size: 1.2rem;">You are within the 30-inch geofence radius of the ambulance unit.</p>
+    <p style="font-size: 1.2rem;">You are within the geofence radius of the ambulance unit.</p>
   </div>
 
   <!-- LEAFLET & FIREBASE SDKs -->
@@ -111,7 +114,7 @@
       setPersistence, 
       inMemoryPersistence 
     } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-    import { getDatabase, ref, update, onValue, onDisconnect } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+    import { getDatabase, ref, update, onValue, onDisconnect, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyA388fFTEobfUT-EMmSCCvkhdGe9taB7tA",
@@ -128,7 +131,7 @@
     const auth = getAuth(app);
     const db = getDatabase(app);
 
-    let activeRadiusMeters = 0.762; // 30 inches
+    let activeRadiusMeters = 0.762; // 30 inches default
     let adminPos = null;
     let manualCalibration = false;
     let latestMobilePos = null;
@@ -153,6 +156,7 @@
         });
     };
 
+    // Zero-Point Indoor Calibration
     window.calibrateToFirstDevice = function() {
       if (!latestMobilePos) {
         alert("No mobile device detected yet! Connect your phone first.");
@@ -162,6 +166,29 @@
       manualCalibration = true;
       document.getElementById('admin-coords').innerText = `${adminPos.lat.toFixed(6)}, ${adminPos.lng.toFixed(6)} (Calibrated)`;
       alert("🎯 Calibrated! Zero point set directly to phone location.");
+    };
+
+    // Clear Inactive Test Devices
+    window.clearInactiveDevices = function() {
+      const devicesRef = ref(db, 'devices');
+      onValue(devicesRef, (snapshot) => {
+        const data = snapshot.val();
+        if (!data) return;
+
+        const twoMinutesAgo = Date.now() - (2 * 60 * 1000);
+        let removedCount = 0;
+
+        Object.keys(data).forEach((id) => {
+          const device = data[id];
+          // Delete devices that haven't updated in 2 mins or lack timestamp
+          if (!device.lastUpdated || device.lastUpdated < twoMinutesAgo) {
+            remove(ref(db, `devices/${id}`));
+            removedCount++;
+          }
+        });
+
+        alert(`🧹 Cleaned up ${removedCount} inactive test device(s)!`);
+      }, { onlyOnce: true });
     };
 
     function getDistanceInMeters(lat1, lon1, lat2, lon2) {
@@ -223,7 +250,7 @@
         maximumAge: 0 
       });
 
-      // LISTEN TO CONNECTED MOBILE DEVICES WITH DEBOUNCE BUFFER
+      // LISTEN TO CONNECTED MOBILE DEVICES WITH HYSTERESIS BUFFER
       onValue(ref(db, 'devices'), (snapshot) => {
         const data = snapshot.val();
         const registeredListEl = document.getElementById('registered-device-list');
@@ -249,15 +276,15 @@
 
           const distanceMeters = getDistanceInMeters(adminPos.lat, adminPos.lng, device.lat, device.lng);
 
-          // Hysteresis calculation (Buffer zone: Entry = activeRadius, Exit = activeRadius + 0.3m)
+          // Anti-flicker hysteresis (adds 0.35m buffer zone to exit threshold)
           const isCurrentlyInside = device.insideRadius === true;
-          const exitThreshold = activeRadiusMeters + 0.35; // Adds ~14 inches buffer to prevent flickering
+          const exitThreshold = activeRadiusMeters + 0.35;
 
           let isInside = false;
           if (isCurrentlyInside) {
-            isInside = distanceMeters <= exitThreshold; // Needs to move further out to deactivate
+            isInside = distanceMeters <= exitThreshold;
           } else {
-            isInside = distanceMeters <= activeRadiusMeters; // Must enter clean threshold to activate
+            isInside = distanceMeters <= activeRadiusMeters;
           }
 
           if (device.insideRadius !== isInside) {
@@ -349,7 +376,7 @@
         }
       );
 
-      // Stable state listener
+      // Listener for Geofence Proximity Alert
       onValue(ref(db, `devices/${uniqueId}/insideRadius`), (snapshot) => {
         const isReached = snapshot.val();
         const alertBox = document.getElementById('alert-box');
