@@ -35,11 +35,11 @@
 </head>
 <body>
 
-  <!-- LOGIN & MODE SELECTOR -->
+  <!-- LOGIN SCREEN -->
   <div id="login-screen" class="centered-screen">
     <div class="card">
       <h2 style="margin-bottom: 15px;">Login Tracker</h2>
-      <input type="text" id="username" class="input-field" placeholder="Enter Name / Device Name" required />
+      <input type="text" id="username" class="input-field" placeholder="Enter Your Name" required />
       <button class="btn btn-admin" onclick="handleLogin('admin')">💻 Login as Ambulance (Admin)</button>
       <button class="btn btn-mobile" onclick="handleLogin('mobile')">📱 Login as Mobile Client</button>
     </div>
@@ -70,8 +70,13 @@
   <div id="mobile-view" class="view">
     <div class="card" style="margin: 40px auto; text-align: center;">
       <h2>📱 Mobile Client</h2>
-      <p style="margin-top: 15px;">User Name / ID:</p>
-      <h1 id="device-id" style="color: #38bdf8; margin: 10px 0;">Generating...</h1>
+      
+      <p style="margin-top: 15px;">User Name:</p>
+      <h2 id="mobile-user-display" style="color: #38bdf8; margin-bottom: 10px;">-</h2>
+
+      <p>Unique Device ID:</p>
+      <h3 id="mobile-id-display" style="color: #34d399; margin-bottom: 15px;">-</h3>
+
       <p>GPS Status: <strong id="gps-status">Connecting...</strong></p>
     </div>
   </div>
@@ -82,12 +87,12 @@
     <p style="font-size: 1.2rem;">You are within 1 meter of the ambulance unit.</p>
   </div>
 
-  <!-- SDKs -->
+  <!-- LEAFLET & FIREBASE SDKs -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
     import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-    import { getDatabase, ref, update, onValue, onDisconnect, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+    import { getDatabase, ref, update, onValue, onDisconnect } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyA388fFTEobfUT-EMmSCCvkhdGe9taB7tA",
@@ -107,17 +112,17 @@
     const RADIUS_METERS = 1.0; 
 
     window.handleLogin = function(role) {
-      const usernameInput = document.getElementById('username').value.trim();
-      if (!usernameInput) {
-        alert("Please enter a username or device name.");
+      const nameInput = document.getElementById('username').value.trim();
+      if (!nameInput) {
+        alert("Please enter your name.");
         return;
       }
 
       document.getElementById('login-screen').style.display = 'none';
 
       signInAnonymously(auth).then(() => {
-        if (role === 'admin') initAdmin(usernameInput);
-        if (role === 'mobile') initMobile(usernameInput);
+        if (role === 'admin') initAdmin(nameInput);
+        if (role === 'mobile') initMobile(nameInput);
       });
     };
 
@@ -132,9 +137,9 @@
     }
 
     // --- ADMIN DASHBOARD ---
-    function initAdmin(username) {
+    function initAdmin(adminName) {
       document.getElementById('admin-view').style.display = 'block';
-      document.getElementById('admin-user-display').innerText = username;
+      document.getElementById('admin-user-display').innerText = adminName;
 
       const map = L.map('map').setView([0, 0], 19);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
@@ -174,7 +179,6 @@
         let registeredCount = 0;
         let availableCount = 0;
 
-        // Process unique device IDs directly from DB key list
         Object.keys(data).forEach((id) => {
           const device = data[id];
           if (!device || device.lat === undefined || device.lng === undefined) return;
@@ -182,15 +186,17 @@
           const distance = getDistanceInMeters(adminPos.lat, adminPos.lng, device.lat, device.lng);
           const isInside = distance <= RADIUS_METERS;
 
-          // Only update database state if state actually changed to avoid loop
+          // Prevent state mutation loops
           if (device.insideRadius !== isInside) {
             update(ref(db, `devices/${id}`), { insideRadius: isInside });
           }
 
+          const userName = device.name || 'Unknown User';
           const card = document.createElement('div');
           card.className = `device-card ${isInside ? 'inside' : 'outside'}`;
           card.innerHTML = `
-            <strong>Device ID:</strong> ${id}<br>
+            <strong>User Name:</strong> ${userName}<br>
+            <strong>Unique ID:</strong> ${id}<br>
             <strong>Distance:</strong> ${distance.toFixed(2)} meters<br>
             <strong>Status:</strong> ${isInside ? '⚠️ REACHED AMBULANCE' : '✅ En Route'}
           `;
@@ -210,24 +216,31 @@
     }
 
     // --- MOBILE CLIENT ---
-    function initMobile(username) {
+    function initMobile(userName) {
       document.getElementById('mobile-view').style.display = 'block';
 
-      // Clean ID key for Firebase path
-      const cleanId = username.replace(/[^a-zA-Z0-9_-]/g, '_');
-      document.getElementById('device-id').innerText = cleanId;
+      // Generate or retrieve stored unique ID
+      let uniqueId = localStorage.getItem('mobile_unique_id');
+      if (!uniqueId) {
+        uniqueId = 'MOB-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+        localStorage.setItem('mobile_unique_id', uniqueId);
+      }
 
-      const deviceRef = ref(db, `devices/${cleanId}`);
+      // Display Name & Unique ID on screen
+      document.getElementById('mobile-user-display').innerText = userName;
+      document.getElementById('mobile-id-display').innerText = uniqueId;
 
-      // Cleanup node on disconnect
+      const deviceRef = ref(db, `devices/${uniqueId}`);
+
+      // Auto disconnect cleanup
       onDisconnect(deviceRef).remove();
 
-      // GPS Watch
+      // GPS Tracking
       navigator.geolocation.watchPosition((pos) => {
         document.getElementById('gps-status').innerText = 'Active (Live)';
         
-        // FIX: Use UPDATE instead of SET to preserve the insideRadius property
         update(deviceRef, {
+          name: userName,
           lat: pos.coords.latitude,
           lng: pos.coords.longitude,
           lastUpdated: Date.now()
@@ -236,8 +249,8 @@
         document.getElementById('gps-status').innerText = 'GPS Error: ' + err.message;
       }, { enableHighAccuracy: true, maximumAge: 0 });
 
-      // FIX: Listen specifically to insideRadius property updates
-      onValue(ref(db, `devices/${cleanId}/insideRadius`), (snapshot) => {
+      // Listen for proximity state
+      onValue(ref(db, `devices/${uniqueId}/insideRadius`), (snapshot) => {
         const isReached = snapshot.val();
         document.getElementById('alert-box').style.display = isReached === true ? 'flex' : 'none';
       });
