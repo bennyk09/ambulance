@@ -156,7 +156,7 @@
         });
     };
 
-    // Zero-Point Indoor Calibration
+    // Indoor Zero-Point Calibration
     window.calibrateToFirstDevice = function() {
       if (!latestMobilePos) {
         alert("No mobile device detected yet! Connect your phone first.");
@@ -168,7 +168,7 @@
       alert("🎯 Calibrated! Zero point set directly to phone location.");
     };
 
-    // Clear Inactive Test Devices
+    // Manual Cleanup of Stale Test Nodes
     window.clearInactiveDevices = function() {
       const devicesRef = ref(db, 'devices');
       onValue(devicesRef, (snapshot) => {
@@ -180,7 +180,6 @@
 
         Object.keys(data).forEach((id) => {
           const device = data[id];
-          // Delete devices that haven't updated in 2 mins or lack timestamp
           if (!device.lastUpdated || device.lastUpdated < twoMinutesAgo) {
             remove(ref(db, `devices/${id}`));
             removedCount++;
@@ -250,7 +249,7 @@
         maximumAge: 0 
       });
 
-      // LISTEN TO CONNECTED MOBILE DEVICES WITH HYSTERESIS BUFFER
+      // LISTEN TO CONNECTED MOBILE DEVICES
       onValue(ref(db, 'devices'), (snapshot) => {
         const data = snapshot.val();
         const registeredListEl = document.getElementById('registered-device-list');
@@ -267,6 +266,7 @@
 
         let registeredCount = 0;
         let availableCount = 0;
+        const thirtySecondsAgo = Date.now() - 30000;
 
         Object.keys(data).forEach((id) => {
           const device = data[id];
@@ -276,12 +276,16 @@
 
           const distanceMeters = getDistanceInMeters(adminPos.lat, adminPos.lng, device.lat, device.lng);
 
-          // Anti-flicker hysteresis (adds 0.35m buffer zone to exit threshold)
+          // Hysteresis calculation (Buffer zone: Entry = activeRadius, Exit = activeRadius + 0.35m)
           const isCurrentlyInside = device.insideRadius === true;
           const exitThreshold = activeRadiusMeters + 0.35;
 
           let isInside = false;
-          if (isCurrentlyInside) {
+
+          // Auto-reset alert if the mobile client went idle/disconnected for >30 seconds
+          if (device.lastUpdated && device.lastUpdated < thirtySecondsAgo) {
+            isInside = false;
+          } else if (isCurrentlyInside) {
             isInside = distanceMeters <= exitThreshold;
           } else {
             isInside = distanceMeters <= activeRadiusMeters;
@@ -377,7 +381,7 @@
       );
 
       // Listener for Geofence Proximity Alert
-      onValue(ref(db, `devices/${uniqueId}/insideRadius`), (snapshot) => {
+      const syncAlertState = (snapshot) => {
         const isReached = snapshot.val();
         const alertBox = document.getElementById('alert-box');
 
@@ -385,6 +389,15 @@
           alertBox.style.display = 'flex';
         } else {
           alertBox.style.display = 'none';
+        }
+      };
+
+      onValue(ref(db, `devices/${uniqueId}/insideRadius`), syncAlertState);
+
+      // Force immediate refresh when switching tabs or unlocking phone screen
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") {
+          onValue(ref(db, `devices/${uniqueId}/insideRadius`), syncAlertState, { onlyOnce: true });
         }
       });
     }
