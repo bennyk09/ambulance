@@ -128,7 +128,7 @@
     const auth = getAuth(app);
     const db = getDatabase(app);
 
-    let activeRadiusMeters = 0.762; // Default ~30 inches
+    let activeRadiusMeters = 0.762; // 30 inches
     let adminPos = null;
     let manualCalibration = false;
     let latestMobilePos = null;
@@ -153,7 +153,6 @@
         });
     };
 
-    // Make Calibration Function Globally Accessible for the Admin UI
     window.calibrateToFirstDevice = function() {
       if (!latestMobilePos) {
         alert("No mobile device detected yet! Connect your phone first.");
@@ -162,7 +161,7 @@
       adminPos = { lat: latestMobilePos.lat, lng: latestMobilePos.lng };
       manualCalibration = true;
       document.getElementById('admin-coords').innerText = `${adminPos.lat.toFixed(6)}, ${adminPos.lng.toFixed(6)} (Calibrated)`;
-      alert("🎯 Calibrated! Ambulance zero-point moved to match phone GPS.");
+      alert("🎯 Calibrated! Zero point set directly to phone location.");
     };
 
     function getDistanceInMeters(lat1, lon1, lat2, lon2) {
@@ -224,7 +223,7 @@
         maximumAge: 0 
       });
 
-      // LISTEN TO CONNECTED MOBILE DEVICES
+      // LISTEN TO CONNECTED MOBILE DEVICES WITH DEBOUNCE BUFFER
       onValue(ref(db, 'devices'), (snapshot) => {
         const data = snapshot.val();
         const registeredListEl = document.getElementById('registered-device-list');
@@ -246,11 +245,20 @@
           const device = data[id];
           if (!device || device.lat === undefined || device.lng === undefined) return;
 
-          // Store current device pos for indoor calibration reference
           latestMobilePos = { lat: device.lat, lng: device.lng };
 
           const distanceMeters = getDistanceInMeters(adminPos.lat, adminPos.lng, device.lat, device.lng);
-          const isInside = distanceMeters <= activeRadiusMeters;
+
+          // Hysteresis calculation (Buffer zone: Entry = activeRadius, Exit = activeRadius + 0.3m)
+          const isCurrentlyInside = device.insideRadius === true;
+          const exitThreshold = activeRadiusMeters + 0.35; // Adds ~14 inches buffer to prevent flickering
+
+          let isInside = false;
+          if (isCurrentlyInside) {
+            isInside = distanceMeters <= exitThreshold; // Needs to move further out to deactivate
+          } else {
+            isInside = distanceMeters <= activeRadiusMeters; // Must enter clean threshold to activate
+          }
 
           if (device.insideRadius !== isInside) {
             update(ref(db, `devices/${id}`), { insideRadius: isInside });
@@ -341,7 +349,7 @@
         }
       );
 
-      // Explicitly reset alert view when leaving geofence radius
+      // Stable state listener
       onValue(ref(db, `devices/${uniqueId}/insideRadius`), (snapshot) => {
         const isReached = snapshot.val();
         const alertBox = document.getElementById('alert-box');
